@@ -1,3 +1,4 @@
+
 #include "kernel.h"
 #include <stdint.h>
 
@@ -15,6 +16,51 @@ int input_index = 0;
 // Command handling
 #define MAX_COMMAND_LENGTH 256
 #define MAX_ARGS 10
+
+// Custom string functions (since we can't use standard library)
+int strcmp(const char* str1, const char* str2) {
+    while (*str1 && (*str1 == *str2)) {
+        str1++;
+        str2++;
+    }
+    return *(unsigned char*)str1 - *(unsigned char*)str2;
+}
+
+char* strchr(const char* str, int c) {
+    while (*str) {
+        if (*str == c) {
+            return (char*)str;
+        }
+        str++;
+    }
+    return 0;
+}
+
+int atoi(const char* str) {
+    int result = 0;
+    int sign = 1;
+    
+    // Skip whitespace
+    while (*str == ' ' || *str == '\t') {
+        str++;
+    }
+    
+    // Handle sign
+    if (*str == '-') {
+        sign = -1;
+        str++;
+    } else if (*str == '+') {
+        str++;
+    }
+    
+    // Convert digits
+    while (*str >= '0' && *str <= '9') {
+        result = result * 10 + (*str - '0');
+        str++;
+    }
+    
+    return result * sign;
+}
 
 // Basic math operations
 int add(int a, int b) { return a + b; }
@@ -105,12 +151,12 @@ void process_command(const char* cmd) {
     
     // Simple command parsing
     int i = 0, j = 0, k = 0;
-    while (cmd[i] && j < MAX_COMMAND_LENGTH) {
+    while (cmd[i] && j < MAX_COMMAND_LENGTH - 1) {
         if (cmd[i] == ' ') {
             command[j] = '\0';
             j = 0;
             i++;
-            while (cmd[i] && cmd[i] != ' ' && k < MAX_COMMAND_LENGTH) {
+            while (cmd[i] && cmd[i] != ' ' && k < MAX_COMMAND_LENGTH - 1) {
                 args[arg_count][k++] = cmd[i++];
             }
             if (k > 0) {
@@ -125,7 +171,21 @@ void process_command(const char* cmd) {
     command[j] = '\0';
 
     // Command handling
-    if (strcmp(command, "shutdown") == 0) {
+    if (strcmp(command, "help") == 0) {
+        print("Available commands:\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
+        print("  shutdown - shutdown the system\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
+        print("  reboot - reboot the system\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
+        print("  echo \"text\" - print text\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
+        print("  echo \"num1+num2\" - math operations (+, -, *, /)\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
+        print("  rand - generate random number (0-99)\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
+        print("  clear - clear screen\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
+    }
+    else if (strcmp(command, "clear") == 0) {
+        clear_screen();
+        print_logo();
+        print("\nWelcome to Nexus OS v0.1\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
+    }
+    else if (strcmp(command, "shutdown") == 0) {
         print("Shutting down...\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
         // In a real OS, we would use ACPI to shutdown
         while(1) { __asm__("hlt"); }
@@ -174,6 +234,7 @@ void process_command(const char* cmd) {
         print("Unknown command: ", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
         print(command, VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
         print("\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
+        print("Type 'help' for available commands.\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
     }
 }
 
