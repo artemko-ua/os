@@ -8,7 +8,7 @@ LD = ld
 # Compiler flags
 CFLAGS = -m64 -ffreestanding -fno-stack-protector -nostdlib -nodefaultlibs -Wall -Wextra
 NASMFLAGS = -f elf64
-LDFLAGS = -nostdlib -nodefaultlibs -T linker.ld
+LDFLAGS = -nostdlib --nodefaultlibs -T linker.ld
 
 # Source files
 KERNEL_SRCS = kernel.c
