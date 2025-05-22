@@ -39,4 +39,4 @@ _start:
     jmp .halt
 
 ; Pad to ensure the kernel meets multiboot requirements
-times 512 - ($ - $$) db 0
+times 512 - ($ - $$) db 0 
