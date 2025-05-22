@@ -16,4 +16,9 @@ int subtract(int a, int b);
 int multiply(int a, int b);
 int divide(int a, int b);
 
+// Custom string functions
+int strcmp(const char* str1, const char* str2);
+char* strchr(const char* str, int c);
+int atoi(const char* str);
+
 #endif // KERNEL_H
