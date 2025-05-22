@@ -9,6 +9,9 @@ void print_logo();
 void handle_input(char c);
 void process_command(const char* cmd);
 void itoa(int value, char* str, int base);
+void keyboard_handler();
+void setup_keyboard();
+char get_key();
 
 // Math operations
 int add(int a, int b);
