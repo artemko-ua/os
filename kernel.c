@@ -1,4 +1,3 @@
-
 #include "kernel.h"
 #include <stdint.h>
 
@@ -8,6 +7,15 @@
 #define VGA_COLOR_BLACK 0
 #define VGA_COLOR_WHITE 15
 
+// Keyboard scancode to ASCII mapping (simplified)
+static char scancode_to_ascii[128] = {
+    0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
+    '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
+    0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
+    0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,
+    '*', 0, ' '
+};
+
 // Buffer for input
 #define INPUT_BUFFER_SIZE 256
 char input_buffer[INPUT_BUFFER_SIZE];
@@ -16,6 +24,51 @@ int input_index = 0;
 // Command handling
 #define MAX_COMMAND_LENGTH 256
 #define MAX_ARGS 10
+
+// Port I/O functions
+static inline void outb(uint16_t port, uint8_t val) {
+    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
+}
+
+static inline uint8_t inb(uint16_t port) {
+    uint8_t ret;
+    __asm__ volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
+// Keyboard handling
+void keyboard_handler() {
+    uint8_t scancode = inb(0x60);
+    
+    // Only handle key press (not key release)
+    if (scancode < 128) {
+        char ascii = scancode_to_ascii[scancode];
+        if (ascii != 0) {
+            handle_input(ascii);
+        }
+    }
+}
+
+// Simple interrupt handling
+void setup_keyboard() {
+    // Enable keyboard interrupt
+    outb(0x21, inb(0x21) & ~0x02);
+}
+
+// Simple polling-based keyboard input
+char get_key() {
+    while (1) {
+        if (inb(0x64) & 0x01) {
+            uint8_t scancode = inb(0x60);
+            if (scancode < 128) {
+                char ascii = scancode_to_ascii[scancode];
+                if (ascii != 0) {
+                    return ascii;
+                }
+            }
+        }
+    }
+}
 
 // Custom string functions (since we can't use standard library)
 int strcmp(const char* str1, const char* str2) {
@@ -95,6 +148,15 @@ void print_char(char c, int color) {
         return;
     }
     
+    if (c == '\b') {
+        if (x > 0) {
+            x--;
+            video_memory[(y * VGA_WIDTH + x) * 2] = ' ';
+            video_memory[(y * VGA_WIDTH + x) * 2 + 1] = color;
+        }
+        return;
+    }
+    
     if (x >= VGA_WIDTH) {
         x = 0;
         y++;
@@ -109,6 +171,11 @@ void print_char(char c, int color) {
                 video_memory[(row - 1) * VGA_WIDTH * 2 + col * 2 + 1] = 
                     video_memory[row * VGA_WIDTH * 2 + col * 2 + 1];
             }
+        }
+        // Clear the last row
+        for (int col = 0; col < VGA_WIDTH; col++) {
+            video_memory[(VGA_HEIGHT - 1) * VGA_WIDTH * 2 + col * 2] = ' ';
+            video_memory[(VGA_HEIGHT - 1) * VGA_WIDTH * 2 + col * 2 + 1] = color;
         }
         y = VGA_HEIGHT - 1;
         x = 0;
@@ -277,14 +344,14 @@ void handle_input(char c) {
         if (c == '\n') {
             input_buffer[input_index] = '\0';
             print("\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-            process_command(input_buffer);
+            if (input_index > 0) {
+                process_command(input_buffer);
+            }
             print("nexus> ", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
             input_index = 0;
         } else if (c == '\b') {
             if (input_index > 0) {
                 input_index--;
-                print_char('\b', VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-                print_char(' ', VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
                 print_char('\b', VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
             }
         } else {
@@ -301,4 +368,10 @@ void kmain() {
     print("\nWelcome to Nexus OS v0.1\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
     print("Type 'help' for available commands\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
     print("nexus> ", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
+    
+    // Main input loop
+    while (1) {
+        char key = get_key();
+        handle_input(key);
+    }
 }
