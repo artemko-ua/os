@@ -39,7 +39,7 @@ typedef unsigned long size_t;
 #define VGA_WIDTH  80
 #define VGA_HEIGHT 25
 
-// Виправлені константи - не використовуємо магічні числа
+// Виправлені константи
 #define VGA_BUFFER_ADDRESS  0xB8000
 #define IDT_ADDRESS         0x1000
 #define IDT_ENTRIES         256
@@ -106,6 +106,10 @@ static inline uint8_t inb(uint16_t port) {
     return ret;
 }
 
+// Функції IDT
+void idt_init(void);
+void idt_set_gate(uint8_t num, uint32_t base, uint16_t sel, uint8_t flags);
+
 // Функції переривань
 void pic_init(void);
 void keyboard_handler(void);
@@ -153,4 +157,4 @@ extern size_t terminal_column;
 extern uint8_t terminal_color;
 extern uint16_t* terminal_buffer;
 
-#endif
+#endif 

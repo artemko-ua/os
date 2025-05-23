@@ -14,13 +14,28 @@ size_t input_index = 0;
 extern void enable_interrupts(void);
 extern void disable_interrupts(void);
 extern void keyboard_interrupt_handler(void);
-extern void load_idt(void* idt_descriptor);
 extern void reboot_system(void);
 extern void shutdown_system(void);
-extern void* idt_descriptor;
 
 // Простий генератор випадкових чисел
 static uint32_t random_seed = 12345;
+
+// IDT та GDT структури
+struct idt_entry {
+    uint16_t offset_low;
+    uint16_t selector;
+    uint8_t zero;
+    uint8_t type_attr;
+    uint16_t offset_high;
+} __attribute__((packed));
+
+struct idt_ptr {
+    uint16_t limit;
+    uint32_t base;
+} __attribute__((packed));
+
+struct idt_entry idt[256];
+struct idt_ptr idtp;
 
 void kernel_main(void) {
     // Ініціалізація терміналу
@@ -29,14 +44,48 @@ void kernel_main(void) {
     // Показуємо логотип
     show_logo();
     
-    // Ініціалізація PIC та переривань
+    // Ініціалізація IDT та PIC
+    idt_init();
     pic_init();
     
     // Ініціалізація shell
     shell_initialize();
     
+    // Включаємо переривання
+    enable_interrupts();
+    
     // Запуск shell
     shell_run();
+}
+
+// === IDT ФУНКЦІЇ ===
+
+void idt_init(void) {
+    // Очищуємо IDT
+    for (int i = 0; i < 256; i++) {
+        idt[i].offset_low = 0;
+        idt[i].selector = 0;
+        idt[i].zero = 0;
+        idt[i].type_attr = 0;
+        idt[i].offset_high = 0;
+    }
+    
+    // Встановлюємо обробник клавіатури (IRQ1 = INT 33)
+    idt_set_gate(33, (uint32_t)keyboard_interrupt_handler, 0x08, 0x8E);
+    
+    // Встановлюємо IDT
+    idtp.limit = sizeof(idt) - 1;
+    idtp.base = (uint32_t)&idt;
+    
+    asm volatile("lidt %0" : : "m"(idtp));
+}
+
+void idt_set_gate(uint8_t num, uint32_t base, uint16_t sel, uint8_t flags) {
+    idt[num].offset_low = base & 0xFFFF;
+    idt[num].offset_high = (base >> 16) & 0xFFFF;
+    idt[num].selector = sel;
+    idt[num].zero = 0;
+    idt[num].type_attr = flags;
 }
 
 // === VGA ФУНКЦІЇ ===
@@ -136,49 +185,33 @@ void terminal_clear(void) {
 
 void pic_init(void) {
     // Ремапінг PIC
-    outb(PIC1_COMMAND, 0x11); // ICW1
+    outb(PIC1_COMMAND, 0x11); // ICW1 - ініціалізація
     outb(PIC2_COMMAND, 0x11);
     
-    outb(PIC1_DATA, 0x20); // ICW2 - vector offset для master PIC
-    outb(PIC2_DATA, 0x28); // ICW2 - vector offset для slave PIC
+    outb(PIC1_DATA, 0x20); // ICW2 - vector offset для master PIC (IRQ 0-7 -> INT 32-39)
+    outb(PIC2_DATA, 0x28); // ICW2 - vector offset для slave PIC (IRQ 8-15 -> INT 40-47)
     
-    outb(PIC1_DATA, 0x04); // ICW3 - tell master that slave is at IRQ2
-    outb(PIC2_DATA, 0x02); // ICW3 - tell slave its cascade identity
+    outb(PIC1_DATA, 0x04); // ICW3 - master має slave на IRQ2
+    outb(PIC2_DATA, 0x02); // ICW3 - slave підключений до IRQ2 master
     
     outb(PIC1_DATA, 0x01); // ICW4 - 8086 mode
     outb(PIC2_DATA, 0x01);
     
-    // Маскуємо всі переривання окрім клавіатури (IRQ1)
-    outb(PIC1_DATA, 0xFD); // 11111101 - дозволяємо тільки IRQ1
+    // Дозволяємо тільки клавіатуру (IRQ1)
+    outb(PIC1_DATA, 0xFD); // 11111101 - дозволяємо IRQ1
     outb(PIC2_DATA, 0xFF); // блокуємо всі переривання slave PIC
-    
-    // Ініціалізація IDT для клавіатури (IRQ1 = interrupt 33)
-    uint32_t* idt = (uint32_t*)0x1000; // Адреса IDT
-    uint32_t handler_addr = (uint32_t)keyboard_interrupt_handler;
-    
-    // Запис у IDT для interrupt 33 (IRQ1)
-    idt[33 * 2] = (handler_addr & 0xFFFF) | (0x08 << 16); // Segment selector
-    idt[33 * 2 + 1] = (handler_addr & 0xFFFF0000) | 0x8E00; // Type and attributes
-    
-    // Завантажуємо IDT
-    struct {
-        uint16_t limit;
-        uint32_t base;
-    } __attribute__((packed)) idtr = {
-        .limit = 256 * 8 - 1,
-        .base = 0x1000
-    };
-    
-    asm volatile("lidt %0" :: "m"(idtr));
-    
-    enable_interrupts();
 }
 
 void keyboard_handler(void) {
     uint8_t scancode = inb(KEYBOARD_DATA_PORT);
     
-    // Простий скан-код до ASCII конвертер (тільки для основних клавіш)
-    static char scancode_to_ascii[] = {
+    // Ігноруємо key release (scancode > 0x80)
+    if (scancode & 0x80) {
+        return;
+    }
+    
+    // Простий скан-код до ASCII конвертер
+    static char scancode_to_ascii[128] = {
         0, 0, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
         '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
         0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
@@ -186,7 +219,7 @@ void keyboard_handler(void) {
         '*', 0, ' '
     };
     
-    if (scancode < sizeof(scancode_to_ascii) && scancode_to_ascii[scancode] != 0) {
+    if (scancode < 128 && scancode_to_ascii[scancode] != 0) {
         char c = scancode_to_ascii[scancode];
         
         if (c == '\n') {
