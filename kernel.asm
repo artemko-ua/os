@@ -9,7 +9,7 @@ header_start:
     ; checksum
     dd 0x100000000 - (0xe85250d6 + 0 + (header_end - header_start))
 
-    ; end tag
+    ; required end tag
     dw 0    ; type
     dw 0    ; flags
     dd 8    ; size
@@ -28,6 +28,10 @@ extern kernel_main
 _start:
     ; Встановлюємо стек
     mov esp, stack_top
+
+    ; Очищуємо EFLAGS
+    push 0
+    popf
 
     ; Викликаємо головну функцію ядра
     call kernel_main
@@ -71,13 +75,24 @@ reboot_system:
     ; Перезавантаження через клавіатурний контролер
     mov al, 0xFE
     out 0x64, al
+    ; Якщо не спрацювало, використовуємо triple fault
+    mov eax, cr0
+    and eax, 0x7FFFFFFF ; Вимикаємо paging
+    mov cr0, eax
+    
+    ; Неправильний дескриптор для triple fault
+    lgdt [invalid_gdt]
     ret
 
 ; Функція для вимкнення системи
 global shutdown_system
 shutdown_system:
-    ; Вимкнення через ACPI (якщо підтримується)
-    ; Або просто зупинка CPU
+    ; Спробуємо ACPI shutdown
+    mov dx, 0x604  ; QEMU ACPI shutdown port
+    mov ax, 0x2000
+    out dx, ax
+    
+    ; Якщо ACPI не працює, просто зупиняємо CPU
     cli
 .loop:
     hlt
@@ -91,16 +106,7 @@ load_idt:
     ret
 
 section .data
-; IDT для обробки переривань
-align 8
-idt:
-    times 256 dd 0, 0   ; 256 записів IDT (8 байт кожен)
-
-idt_descriptor:
-    dw 256*8 - 1        ; Розмір IDT - 1
-    dd idt              ; Адреса IDT
-
-global idt_descriptor
-
-; Виправлення попередження про виконуваний стек
-section .note.GNU-stack noalloc noexec nowrite progbits 
+; Неправильний GDT для triple fault
+invalid_gdt:
+    dd 0x00000000
+    dd 0x00000000

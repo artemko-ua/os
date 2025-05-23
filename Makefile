@@ -8,8 +8,8 @@ QEMU = qemu-system-x86_64
 
 # Прапори компіляції
 ASMFLAGS = -f elf32
-CFLAGS = -m32 -ffreestanding -O2 -Wall -Wextra -nostdlib -nostdinc -fno-builtin -fno-stack-protector
-LDFLAGS = -m elf_i386 -T linker.ld
+CFLAGS = -m32 -ffreestanding -O2 -Wall -Wextra -nostdlib -nostdinc -fno-builtin -fno-stack-protector -fno-pic
+LDFLAGS = -m elf_i386 -T linker.ld --nmagic
 
 # Файли
 ASM_SOURCES = kernel.asm
@@ -37,22 +37,30 @@ kernel.o: kernel.c kernel.h
 iso: $(TARGET)
 	mkdir -p iso/boot/grub
 	cp $(TARGET) iso/boot/
-	echo 'menuentry "Nexus OS v0.1" {' > iso/boot/grub/grub.cfg
+	echo 'set timeout=0' > iso/boot/grub/grub.cfg
+	echo 'set default=0' >> iso/boot/grub/grub.cfg
+	echo '' >> iso/boot/grub/grub.cfg
+	echo 'menuentry "Nexus OS v0.1" {' >> iso/boot/grub/grub.cfg
 	echo '    multiboot2 /boot/$(TARGET)' >> iso/boot/grub/grub.cfg
+	echo '    boot' >> iso/boot/grub/grub.cfg
 	echo '}' >> iso/boot/grub/grub.cfg
 	grub-mkrescue -o $(ISO) iso
 
 # Запуск в QEMU
 run: $(TARGET)
-	$(QEMU) -kernel $(TARGET) -serial stdio
+	$(QEMU) -kernel $(TARGET) -serial stdio -m 512M
 
 # Запуск з ISO
 run-iso: iso
-	$(QEMU) -cdrom $(ISO) -serial stdio
+	$(QEMU) -cdrom $(ISO) -serial stdio -m 512M
 
 # Налагодження
 debug: $(TARGET)
-	$(QEMU) -kernel $(TARGET) -s -S -serial stdio
+	$(QEMU) -kernel $(TARGET) -s -S -serial stdio -m 512M
+
+# Налагодження ISO
+debug-iso: iso
+	$(QEMU) -cdrom $(ISO) -s -S -serial stdio -m 512M
 
 # Очищення
 clean:
@@ -73,19 +81,31 @@ install-deps:
 	sudo apt-get update
 	sudo apt-get install build-essential nasm qemu-system-x86 grub-pc-bin xorriso
 
+# Показати розмір ядра
+size: $(TARGET)
+	@echo "Розмір скомпільованого ядра:"
+	@ls -lh $(TARGET)
+	@file $(TARGET)
+
+# Дамп секцій
+objdump: $(TARGET)
+	objdump -h $(TARGET)
+
 # Показати інформацію про проект
 info:
 	@echo "Nexus OS v0.1 - Проста операційна система"
 	@echo "=========================================="
 	@echo "Команди:"
-	@echo "  make         - збірка ядра"
-	@echo "  make run     - запуск в QEMU (без GRUB)"
-	@echo "  make iso     - створення ISO образу"
-	@echo "  make run-iso - запуск ISO в QEMU"
-	@echo "  make debug   - запуск з налагодженням"
-	@echo "  make clean   - очищення файлів збірки"
+	@echo "  make           - збірка ядра"
+	@echo "  make run       - запуск в QEMU (без GRUB)"
+	@echo "  make iso       - створення ISO образу"
+	@echo "  make run-iso   - запуск ISO в QEMU"
+	@echo "  make debug     - запуск з налагодженням"
+	@echo "  make debug-iso - налагодження ISO"
+	@echo "  make clean     - очищення файлів збірки"
+	@echo "  make size      - показати розмір ядра"
+	@echo "  make objdump   - показати секції ядра"
 	@echo "  make check-deps - перевірка залежностей"
-	@echo "  make install-deps - встановлення залежностей"
 
 # Додаткові цілі
-.PHONY: all run run-iso debug clean check-deps install-deps info iso
+.PHONY: all run run-iso debug debug-iso clean check-deps install-deps info iso size objdump

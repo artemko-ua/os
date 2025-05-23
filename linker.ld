@@ -2,31 +2,36 @@ ENTRY(_start)
 
 SECTIONS
 {
-    . = 1M;
+    /* Завантажуємо ядро за адресою 1MB */
+    . = 0x100000;
 
-    .boot :
-    {
-        /* ensure that the multiboot header is at the beginning */
+    /* Multiboot header має бути на початку */
+    .multiboot ALIGN(4K) : {
         *(.multiboot_header)
     }
 
-    .text :
-    {
+    /* Текстова секція (код) */
+    .text ALIGN(4K) : {
         *(.text)
     }
 
-    .rodata :
-    {
+    /* Readonly дані */
+    .rodata ALIGN(4K) : {
         *(.rodata)
     }
 
-    .data :
-    {
+    /* Ініціалізовані дані */
+    .data ALIGN(4K) : {
         *(.data)
     }
 
-    .bss :
-    {
+    /* Неініціалізовані дані (BSS) */
+    .bss ALIGN(4K) : {
         *(.bss)
+        *(COMMON)
     }
+
+    /* Забезпечуємо правильне вирівнювання кінця ядра */
+    . = ALIGN(4K);
+    end = .;
 }
