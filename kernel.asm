@@ -101,3 +101,6 @@ idt_descriptor:
     dd idt              ; Адреса IDT
 
 global idt_descriptor
+
+; Виправлення попередження про виконуваний стек
+section .note.GNU-stack noalloc noexec nowrite progbits 

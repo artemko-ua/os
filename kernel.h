@@ -13,6 +13,8 @@ typedef signed long long int64_t;
 typedef unsigned long size_t;
 
 #define NULL ((void*)0)
+#define true 1
+#define false 0
 
 // Кольори для VGA тексту
 #define VGA_COLOR_BLACK         0
@@ -30,12 +32,23 @@ typedef unsigned long size_t;
 #define VGA_COLOR_LIGHT_RED     12
 #define VGA_COLOR_LIGHT_MAGENTA 13
 #define VGA_COLOR_LIGHT_BROWN   14
-#define VGA_COLOR_LIGHT_YELLOW  14  // Додана відсутня константа
+#define VGA_COLOR_LIGHT_YELLOW  14
 #define VGA_COLOR_WHITE         15
 
 // Розміри VGA екрану
 #define VGA_WIDTH  80
 #define VGA_HEIGHT 25
+
+// Виправлені константи - не використовуємо магічні числа
+#define VGA_BUFFER_ADDRESS  0xB8000
+#define IDT_ADDRESS         0x1000
+#define IDT_ENTRIES         256
+#define IDT_ENTRY_SIZE      8
+
+// Обмеження буферів
+#define MAX_INPUT_SIZE      256
+#define MAX_COMMAND_LEN     64
+#define MATH_BUFFER_SIZE    32
 
 // PIC константи
 #define PIC1_COMMAND    0x20
@@ -45,8 +58,31 @@ typedef unsigned long size_t;
 #define PIC_EOI         0x20
 
 // Клавіатура
-#define KEYBOARD_DATA_PORT   0x60
-#define KEYBOARD_STATUS_PORT 0x64
+#define KEYBOARD_DATA_PORT      0x60
+#define KEYBOARD_STATUS_PORT    0x64
+#define KEYBOARD_SCANCODE_MAX   57
+
+// Коди помилок
+#define SUCCESS                 0
+#define ERROR_INVALID_INPUT     -1
+#define ERROR_BUFFER_OVERFLOW   -2
+#define ERROR_DIVISION_BY_ZERO  -3
+#define ERROR_INVALID_EXPRESSION -4
+
+// Математичні операції - результати
+typedef enum {
+    MATH_SUCCESS = 0,
+    MATH_ERROR_INVALID_EXPR,
+    MATH_ERROR_DIV_BY_ZERO,
+    MATH_ERROR_OVERFLOW,
+    MATH_ERROR_PARSE_FAIL
+} math_result_t;
+
+// Структура для результатів математичних операцій
+typedef struct {
+    int value;
+    math_result_t error;
+} math_calculation_t;
 
 // Функції VGA
 void terminal_initialize(void);
@@ -89,6 +125,7 @@ int subtract(int a, int b);
 int multiply(int a, int b);
 int divide(int a, int b);
 int random_number(void);
+math_calculation_t parse_math_expression_safe(const char* expr);
 
 // Системні функції
 void shutdown(void);
@@ -104,8 +141,12 @@ int atoi(const char* str);
 void itoa(int value, char* str, int base);
 int parse_math_expression(const char* expr);
 
+// Функції валідації
+int is_valid_input(const char* input);
+int is_safe_buffer_operation(size_t current_size, size_t max_size, size_t add_size);
+
 // Глобальні змінні
-extern char input_buffer[256];
+extern char input_buffer[MAX_INPUT_SIZE];
 extern size_t input_index;
 extern size_t terminal_row;
 extern size_t terminal_column;
