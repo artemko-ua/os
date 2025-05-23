@@ -1,114 +1,428 @@
 #include "kernel.h"
-#include <stdint.h>
 
-// VGA text buffer properties
-#define VGA_WIDTH 80
-#define VGA_HEIGHT 25
-#define VGA_COLOR_BLACK 0
-#define VGA_COLOR_WHITE 15
+// Глобальні змінні для VGA терміналу
+size_t terminal_row;
+size_t terminal_column;
+uint8_t terminal_color;
+uint16_t* terminal_buffer;
 
-// PIC ports
-#define PIC1_COMMAND 0x20
-#define PIC1_DATA 0x21
-#define PIC2_COMMAND 0xA0
-#define PIC2_DATA 0xA1
+// Буфер для вводу команд
+char input_buffer[256];
+size_t input_index = 0;
 
-// Keyboard scancode to ASCII mapping (simplified)
-static char scancode_to_ascii[128] = {
-    0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
-    '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
-    0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
-    0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,
-    '*', 0, ' '
-};
+// Зовнішні функції з асемблера
+extern void enable_interrupts(void);
+extern void disable_interrupts(void);
+extern void keyboard_interrupt_handler(void);
+extern void load_idt(void* idt_descriptor);
+extern void reboot_system(void);
+extern void shutdown_system(void);
+extern void* idt_descriptor;
 
-// Buffer for input
-#define INPUT_BUFFER_SIZE 256
-char input_buffer[INPUT_BUFFER_SIZE];
-int input_index = 0;
+// Простий генератор випадкових чисел
+static uint32_t random_seed = 12345;
 
-// Command handling
-#define MAX_COMMAND_LENGTH 256
-#define MAX_ARGS 10
-
-// Port I/O functions
-static inline void outb(uint16_t port, uint8_t val) {
-    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
+void kernel_main(void) {
+    // Ініціалізація терміналу
+    terminal_initialize();
+    
+    // Показуємо логотип
+    show_logo();
+    
+    // Ініціалізація PIC та переривань
+    pic_init();
+    
+    // Ініціалізація shell
+    shell_initialize();
+    
+    // Запуск shell
+    shell_run();
 }
 
-static inline uint8_t inb(uint16_t port) {
-    uint8_t ret;
-    __asm__ volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
+// === VGA ФУНКЦІЇ ===
+
+uint8_t vga_entry_color(uint8_t fg, uint8_t bg) {
+    return fg | bg << 4;
 }
 
-// Initialize PIC
-void init_pic() {
-    // ICW1: start initialization sequence
-    outb(PIC1_COMMAND, 0x11);
-    outb(PIC2_COMMAND, 0x11);
-    
-    // ICW2: remap IRQ table
-    outb(PIC1_DATA, 0x20);    // IRQ 0-7 -> interrupts 0x20-0x27
-    outb(PIC2_DATA, 0x28);    // IRQ 8-15 -> interrupts 0x28-0x2F
-    
-    // ICW3: tell PICs how they're cascaded
-    outb(PIC1_DATA, 0x04);
-    outb(PIC2_DATA, 0x02);
-    
-    // ICW4: set 8086 mode
-    outb(PIC1_DATA, 0x01);
-    outb(PIC2_DATA, 0x01);
-    
-    // Mask all interrupts except keyboard (IRQ1)
-    outb(PIC1_DATA, 0xFD);    // Enable IRQ1 (keyboard)
-    outb(PIC2_DATA, 0xFF);    // Disable all IRQs on PIC2
+uint16_t vga_entry(unsigned char uc, uint8_t color) {
+    return (uint16_t) uc | (uint16_t) color << 8;
 }
 
-// Keyboard handling
-void keyboard_handler() {
-    uint8_t scancode = inb(0x60);
+void terminal_initialize(void) {
+    terminal_row = 0;
+    terminal_column = 0;
+    terminal_color = vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+    terminal_buffer = (uint16_t*) 0xB8000;
     
-    // Only handle key press (not key release)
-    if (scancode < 128) {
-        char ascii = scancode_to_ascii[scancode];
-        if (ascii != 0) {
-            handle_input(ascii);
+    for (size_t y = 0; y < VGA_HEIGHT; y++) {
+        for (size_t x = 0; x < VGA_WIDTH; x++) {
+            const size_t index = y * VGA_WIDTH + x;
+            terminal_buffer[index] = vga_entry(' ', terminal_color);
+        }
+    }
+}
+
+void terminal_setcolor(uint8_t color) {
+    terminal_color = color;
+}
+
+void terminal_scroll(void) {
+    // Пересуваємо всі рядки на один вгору
+    for (size_t y = 1; y < VGA_HEIGHT; y++) {
+        for (size_t x = 0; x < VGA_WIDTH; x++) {
+            size_t index = y * VGA_WIDTH + x;
+            size_t prev_index = (y - 1) * VGA_WIDTH + x;
+            terminal_buffer[prev_index] = terminal_buffer[index];
         }
     }
     
-    // Send EOI to PIC
-    outb(PIC1_COMMAND, 0x20);
+    // Очищуємо останній рядок
+    for (size_t x = 0; x < VGA_WIDTH; x++) {
+        size_t index = (VGA_HEIGHT - 1) * VGA_WIDTH + x;
+        terminal_buffer[index] = vga_entry(' ', terminal_color);
+    }
+    
+    terminal_row = VGA_HEIGHT - 1;
 }
 
-// Setup keyboard
-void setup_keyboard() {
-    // Initialize PIC
-    init_pic();
-    
-    // Enable keyboard interrupt
-    outb(0x21, inb(0x21) & ~0x02);
-    
-    // Enable interrupts
-    __asm__ volatile("sti");
-}
-
-// Simple polling-based keyboard input
-char get_key() {
-    while (1) {
-        if (inb(0x64) & 0x01) {
-            uint8_t scancode = inb(0x60);
-            if (scancode < 128) {
-                char ascii = scancode_to_ascii[scancode];
-                if (ascii != 0) {
-                    return ascii;
-                }
+void terminal_putchar(char c) {
+    if (c == '\n') {
+        terminal_column = 0;
+        if (++terminal_row == VGA_HEIGHT) {
+            terminal_scroll();
+        }
+    } else if (c == '\b') {
+        if (terminal_column > 0) {
+            terminal_column--;
+            const size_t index = terminal_row * VGA_WIDTH + terminal_column;
+            terminal_buffer[index] = vga_entry(' ', terminal_color);
+        }
+    } else {
+        const size_t index = terminal_row * VGA_WIDTH + terminal_column;
+        terminal_buffer[index] = vga_entry(c, terminal_color);
+        if (++terminal_column == VGA_WIDTH) {
+            terminal_column = 0;
+            if (++terminal_row == VGA_HEIGHT) {
+                terminal_scroll();
             }
         }
     }
 }
 
-// Custom string functions (since we can't use standard library)
+void terminal_write(const char* data, size_t size) {
+    for (size_t i = 0; i < size; i++) {
+        terminal_putchar(data[i]);
+    }
+}
+
+void terminal_writestring(const char* data) {
+    terminal_write(data, strlen(data));
+}
+
+void terminal_clear(void) {
+    terminal_row = 0;
+    terminal_column = 0;
+    
+    for (size_t y = 0; y < VGA_HEIGHT; y++) {
+        for (size_t x = 0; x < VGA_WIDTH; x++) {
+            const size_t index = y * VGA_WIDTH + x;
+            terminal_buffer[index] = vga_entry(' ', terminal_color);
+        }
+    }
+}
+
+// === PIC ТА ПЕРЕРИВАННЯ ===
+
+void pic_init(void) {
+    // Ремапінг PIC
+    outb(PIC1_COMMAND, 0x11); // ICW1
+    outb(PIC2_COMMAND, 0x11);
+    
+    outb(PIC1_DATA, 0x20); // ICW2 - vector offset для master PIC
+    outb(PIC2_DATA, 0x28); // ICW2 - vector offset для slave PIC
+    
+    outb(PIC1_DATA, 0x04); // ICW3 - tell master that slave is at IRQ2
+    outb(PIC2_DATA, 0x02); // ICW3 - tell slave its cascade identity
+    
+    outb(PIC1_DATA, 0x01); // ICW4 - 8086 mode
+    outb(PIC2_DATA, 0x01);
+    
+    // Маскуємо всі переривання окрім клавіатури (IRQ1)
+    outb(PIC1_DATA, 0xFD); // 11111101 - дозволяємо тільки IRQ1
+    outb(PIC2_DATA, 0xFF); // блокуємо всі переривання slave PIC
+    
+    // Ініціалізація IDT для клавіатури (IRQ1 = interrupt 33)
+    uint32_t* idt = (uint32_t*)0x1000; // Адреса IDT
+    uint32_t handler_addr = (uint32_t)keyboard_interrupt_handler;
+    
+    // Запис у IDT для interrupt 33 (IRQ1)
+    idt[33 * 2] = (handler_addr & 0xFFFF) | (0x08 << 16); // Segment selector
+    idt[33 * 2 + 1] = (handler_addr & 0xFFFF0000) | 0x8E00; // Type and attributes
+    
+    // Завантажуємо IDT
+    struct {
+        uint16_t limit;
+        uint32_t base;
+    } __attribute__((packed)) idtr = {
+        .limit = 256 * 8 - 1,
+        .base = 0x1000
+    };
+    
+    asm volatile("lidt %0" :: "m"(idtr));
+    
+    enable_interrupts();
+}
+
+void keyboard_handler(void) {
+    uint8_t scancode = inb(KEYBOARD_DATA_PORT);
+    
+    // Простий скан-код до ASCII конвертер (тільки для основних клавіш)
+    static char scancode_to_ascii[] = {
+        0, 0, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
+        '\t', 'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n',
+        0, 'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
+        0, '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/', 0,
+        '*', 0, ' '
+    };
+    
+    if (scancode < sizeof(scancode_to_ascii) && scancode_to_ascii[scancode] != 0) {
+        char c = scancode_to_ascii[scancode];
+        
+        if (c == '\n') {
+            terminal_putchar('\n');
+            input_buffer[input_index] = '\0';
+            process_command(input_buffer);
+            input_index = 0;
+            terminal_writestring("nexus> ");
+        } else if (c == '\b') {
+            if (input_index > 0) {
+                input_index--;
+                terminal_putchar('\b');
+            }
+        } else if (input_index < sizeof(input_buffer) - 1) {
+            input_buffer[input_index++] = c;
+            terminal_putchar(c);
+        }
+    }
+}
+
+// === SHELL ФУНКЦІЇ ===
+
+void shell_initialize(void) {
+    input_index = 0;
+    
+    terminal_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    terminal_writestring("Nexus OS v0.1 - Готова до роботи!\n");
+    terminal_writestring("Введіть 'help' для списку команд.\n\n");
+    
+    terminal_setcolor(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
+    terminal_writestring("nexus> ");
+}
+
+void shell_run(void) {
+    // Головний цикл shell - просто чекаємо переривання
+    while (1) {
+        asm volatile("hlt"); // Очікуємо переривання
+    }
+}
+
+void process_command(const char* command) {
+    // Пропускаємо пробіли на початку
+    while (*command == ' ') command++;
+    
+    if (strlen(command) == 0) {
+        return;
+    }
+    
+    if (strcmp(command, "help") == 0) {
+        show_help();
+    } else if (strcmp(command, "clear") == 0) {
+        terminal_clear();
+        show_logo();
+        terminal_writestring("nexus> ");
+        return; // Не показуємо промпт знову
+    } else if (strcmp(command, "shutdown") == 0) {
+        terminal_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        terminal_writestring("Вимкнення системи...\n");
+        shutdown();
+    } else if (strcmp(command, "reboot") == 0) {
+        terminal_setcolor(vga_entry_color(VGA_COLOR_LIGHT_BLUE, VGA_COLOR_BLACK));
+        terminal_writestring("Перезавантаження системи...\n");
+        reboot();
+    } else if (strcmp(command, "rand") == 0) {
+        int num = random_number();
+        char buffer[16];
+        itoa(num, buffer, 10);
+        terminal_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+        terminal_writestring("Випадкове число: ");
+        terminal_writestring(buffer);
+        terminal_writestring("\n");
+    } else if (strncmp(command, "echo ", 5) == 0) {
+        const char* text = command + 5;
+        
+        // Перевіряємо чи це математичний вираз
+        if (strlen(text) > 2 && text[0] == '"' && text[strlen(text)-1] == '"') {
+            // Видаляємо лапки
+            char expr[256];
+            strncpy(expr, text + 1, strlen(text) - 2);
+            expr[strlen(text) - 2] = '\0';
+            
+            // Перевіряємо на математичний вираз
+            int result = parse_math_expression(expr);
+            if (result != -999999) { // -999999 = помилка парсингу
+                char buffer[32];
+                itoa(result, buffer, 10);
+                terminal_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+                terminal_writestring("Результат: ");
+                terminal_writestring(buffer);
+                terminal_writestring("\n");
+            } else {
+                // Просто виводимо текст
+                terminal_setcolor(vga_entry_color(VGA_COLOR_LIGHT_YELLOW, VGA_COLOR_BLACK));
+                terminal_writestring(expr);
+                terminal_writestring("\n");
+            }
+        } else {
+            terminal_setcolor(vga_entry_color(VGA_COLOR_LIGHT_YELLOW, VGA_COLOR_BLACK));
+            terminal_writestring(text);
+            terminal_writestring("\n");
+        }
+    } else {
+        terminal_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        terminal_writestring("Невідома команда: ");
+        terminal_writestring(command);
+        terminal_writestring("\n");
+        terminal_writestring("Введіть 'help' для списку команд.\n");
+    }
+    
+    terminal_setcolor(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
+}
+
+void show_help(void) {
+    terminal_setcolor(vga_entry_color(VGA_COLOR_LIGHT_CYAN, VGA_COLOR_BLACK));
+    terminal_writestring("=== NEXUS OS v0.1 - ДОВІДКА ===\n\n");
+    
+    terminal_setcolor(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
+    terminal_writestring("Доступні команди:\n");
+    terminal_writestring("  help        - показати цю довідку\n");
+    terminal_writestring("  clear       - очистити екран\n");
+    terminal_writestring("  shutdown    - вимкнути систему\n");
+    terminal_writestring("  reboot      - перезавантажити систему\n");
+    terminal_writestring("  rand        - згенерувати випадкове число (0-99)\n");
+    terminal_writestring("  echo \"текст\" - вивести текст\n");
+    
+    terminal_setcolor(vga_entry_color(VGA_COLOR_LIGHT_GREEN, VGA_COLOR_BLACK));
+    terminal_writestring("\nМатематичні операції в echo:\n");
+    terminal_writestring("  echo \"5+3\"   - додавання\n");
+    terminal_writestring("  echo \"10-4\"  - віднімання\n");
+    terminal_writestring("  echo \"6*7\"   - множення\n");
+    terminal_writestring("  echo \"20/4\"  - ділення\n\n");
+}
+
+void show_logo(void) {
+    terminal_setcolor(vga_entry_color(VGA_COLOR_LIGHT_BLUE, VGA_COLOR_BLACK));
+    terminal_writestring(" * *________ ___ *_*___ \n");
+    terminal_writestring("| \\ | | ____\\ \\ / / | \\/ |/ ____| \n");
+    terminal_writestring("| \\| | |__ \\ V /| | \\ / | (___ \n");
+    terminal_writestring("| . ` | **| > < | | |\\/| |\\**_ \\ \n");
+    terminal_writestring("| |\\ | |____ / . \\| | | |____) |\n");
+    terminal_writestring("|_| \\_|______/_/ \\_\\_| |_||_____/\n");
+    
+    terminal_setcolor(vga_entry_color(VGA_COLOR_LIGHT_MAGENTA, VGA_COLOR_BLACK));
+    terminal_writestring("                    OS v0.1\n\n");
+    
+    terminal_setcolor(vga_entry_color(VGA_COLOR_WHITE, VGA_COLOR_BLACK));
+}
+
+// === МАТЕМАТИЧНІ ФУНКЦІЇ ===
+
+int add(int a, int b) {
+    return a + b;
+}
+
+int subtract(int a, int b) {
+    return a - b;
+}
+
+int multiply(int a, int b) {
+    return a * b;
+}
+
+int divide(int a, int b) {
+    if (b == 0) {
+        terminal_setcolor(vga_entry_color(VGA_COLOR_LIGHT_RED, VGA_COLOR_BLACK));
+        terminal_writestring("Помилка: Ділення на нуль!\n");
+        return 0;
+    }
+    return a / b;
+}
+
+int random_number(void) {
+    random_seed = random_seed * 1103515245 + 12345;
+    return (random_seed / 65536) % 100;
+}
+
+int parse_math_expression(const char* expr) {
+    int num1 = 0, num2 = 0;
+    char op = 0;
+    int i = 0;
+    
+    // Парсимо перше число
+    while (expr[i] && expr[i] >= '0' && expr[i] <= '9') {
+        num1 = num1 * 10 + (expr[i] - '0');
+        i++;
+    }
+    
+    // Парсимо оператор
+    if (expr[i] && (expr[i] == '+' || expr[i] == '-' || expr[i] == '*' || expr[i] == '/')) {
+        op = expr[i];
+        i++;
+    } else {
+        return -999999; // Помилка - не математичний вираз
+    }
+    
+    // Парсимо друге число
+    while (expr[i] && expr[i] >= '0' && expr[i] <= '9') {
+        num2 = num2 * 10 + (expr[i] - '0');
+        i++;
+    }
+    
+    // Перевіряємо чи дійшли до кінця
+    if (expr[i] != '\0') {
+        return -999999; // Помилка - зайві символи
+    }
+    
+    // Виконуємо операцію
+    switch (op) {
+        case '+': return add(num1, num2);
+        case '-': return subtract(num1, num2);
+        case '*': return multiply(num1, num2);
+        case '/': return divide(num1, num2);
+        default: return -999999;
+    }
+}
+
+// === СИСТЕМНІ ФУНКЦІЇ ===
+
+void shutdown(void) {
+    disable_interrupts();
+    shutdown_system();
+}
+
+void reboot(void) {
+    disable_interrupts();
+    reboot_system();
+}
+
+// === УТИЛІТАРНІ ФУНКЦІЇ ===
+
+size_t strlen(const char* str) {
+    size_t len = 0;
+    while (str[len]) len++;
+    return len;
+}
+
 int strcmp(const char* str1, const char* str2) {
     while (*str1 && (*str1 == *str2)) {
         str1++;
@@ -117,301 +431,68 @@ int strcmp(const char* str1, const char* str2) {
     return *(unsigned char*)str1 - *(unsigned char*)str2;
 }
 
-char* strchr(const char* str, int c) {
-    while (*str) {
-        if (*str == c) {
-            return (char*)str;
-        }
-        str++;
+int strncmp(const char* str1, const char* str2, size_t n) {
+    while (n && *str1 && (*str1 == *str2)) {
+        str1++;
+        str2++;
+        n--;
     }
-    return 0;
+    if (n == 0) return 0;
+    return *(unsigned char*)str1 - *(unsigned char*)str2;
+}
+
+char* strcpy(char* dest, const char* src) {
+    char* orig_dest = dest;
+    while ((*dest++ = *src++));
+    return orig_dest;
+}
+
+char* strncpy(char* dest, const char* src, size_t n) {
+    char* orig_dest = dest;
+    while (n-- && (*dest++ = *src++));
+    while (n-- > 0) *dest++ = '\0';
+    return orig_dest;
 }
 
 int atoi(const char* str) {
     int result = 0;
     int sign = 1;
     
-    // Skip whitespace
-    while (*str == ' ' || *str == '\t') {
-        str++;
-    }
-    
-    // Handle sign
     if (*str == '-') {
         sign = -1;
         str++;
-    } else if (*str == '+') {
-        str++;
     }
     
-    // Convert digits
     while (*str >= '0' && *str <= '9') {
         result = result * 10 + (*str - '0');
         str++;
     }
     
-    return result * sign;
+    return sign * result;
 }
 
-// Basic math operations
-int add(int a, int b) { return a + b; }
-int subtract(int a, int b) { return a - b; }
-int multiply(int a, int b) { return a * b; }
-int divide(int a, int b) { return b != 0 ? a / b : 0; }
-
-// Simple random number generator (not cryptographically secure)
-uint32_t rand_seed = 12345;
-uint32_t rand() {
-    rand_seed = rand_seed * 1103515245 + 12345;
-    return rand_seed;
-}
-
-// Function to clear the screen
-void clear_screen() {
-    volatile char* video_memory = (volatile char*)0xB8000;
-    for (int i = 0; i < VGA_WIDTH * VGA_HEIGHT * 2; i += 2) {
-        video_memory[i] = ' ';
-        video_memory[i + 1] = VGA_COLOR_BLACK | (VGA_COLOR_WHITE << 4);
-    }
-}
-
-// Function to print a character to the screen
-void print_char(char c, int color) {
-    static int x = 0, y = 0;
-    volatile char* video_memory = (volatile char*)0xB8000;
-    
-    if (c == '\n') {
-        x = 0;
-        y++;
-        return;
-    }
-    
-    if (c == '\b') {
-        if (x > 0) {
-            x--;
-            video_memory[(y * VGA_WIDTH + x) * 2] = ' ';
-            video_memory[(y * VGA_WIDTH + x) * 2 + 1] = color;
-        }
-        return;
-    }
-    
-    if (x >= VGA_WIDTH) {
-        x = 0;
-        y++;
-    }
-    
-    if (y >= VGA_HEIGHT) {
-        // Simple scrolling by moving everything up
-        for (int row = 1; row < VGA_HEIGHT; row++) {
-            for (int col = 0; col < VGA_WIDTH; col++) {
-                video_memory[(row - 1) * VGA_WIDTH * 2 + col * 2] = 
-                    video_memory[row * VGA_WIDTH * 2 + col * 2];
-                video_memory[(row - 1) * VGA_WIDTH * 2 + col * 2 + 1] = 
-                    video_memory[row * VGA_WIDTH * 2 + col * 2 + 1];
-            }
-        }
-        // Clear the last row
-        for (int col = 0; col < VGA_WIDTH; col++) {
-            video_memory[(VGA_HEIGHT - 1) * VGA_WIDTH * 2 + col * 2] = ' ';
-            video_memory[(VGA_HEIGHT - 1) * VGA_WIDTH * 2 + col * 2 + 1] = color;
-        }
-        y = VGA_HEIGHT - 1;
-        x = 0;
-    }
-    
-    video_memory[(y * VGA_WIDTH + x) * 2] = c;
-    video_memory[(y * VGA_WIDTH + x) * 2 + 1] = color;
-    x++;
-}
-
-// Function to print a string
-void print(const char* str, int color) {
-    while (*str) {
-        print_char(*str++, color);
-    }
-}
-
-// Function to print Nexus logo
-void print_logo() {
-    const char* logo_lines[] = {
-        " * *________ ___ *_*___ ",
-        "| \\ | | ____\\ \\ / / | \\/ |/ ____| ",
-        "| \\| | |__ \\ V /| | \\ / | (___ ",
-        "| . ` | **| > < | | |\\/| |\\**_ \\ ",
-        "| |\\ | |____ / . \\| | | |____) |",
-        "|_| \\_|______/_/ \\_\\_| |_||_____/"
-    };
-    
-    for (int i = 0; i < 6; i++) {
-        print(logo_lines[i], VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-        print_char('\n', VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-    }
-}
-
-// Command processing
-void process_command(const char* cmd) {
-    char command[MAX_COMMAND_LENGTH];
-    char args[MAX_ARGS][MAX_COMMAND_LENGTH];
-    int arg_count = 0;
-    
-    // Simple command parsing
-    int i = 0, j = 0, k = 0;
-    while (cmd[i] && j < MAX_COMMAND_LENGTH - 1) {
-        if (cmd[i] == ' ') {
-            command[j] = '\0';
-            j = 0;
-            i++;
-            while (cmd[i] && cmd[i] != ' ' && k < MAX_COMMAND_LENGTH - 1) {
-                args[arg_count][k++] = cmd[i++];
-            }
-            if (k > 0) {
-                args[arg_count][k] = '\0';
-                arg_count++;
-                k = 0;
-            }
-        } else {
-            command[j++] = cmd[i++];
-        }
-    }
-    command[j] = '\0';
-
-    // Command handling
-    if (strcmp(command, "help") == 0) {
-        print("Available commands:\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-        print("  shutdown - shutdown the system\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-        print("  reboot - reboot the system\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-        print("  echo \"text\" - print text\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-        print("  echo \"num1+num2\" - math operations (+, -, *, /)\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-        print("  rand - generate random number (0-99)\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-        print("  clear - clear screen\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-    }
-    else if (strcmp(command, "clear") == 0) {
-        clear_screen();
-        print_logo();
-        print("\nWelcome to Nexus OS v0.1\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-    }
-    else if (strcmp(command, "shutdown") == 0) {
-        print("Shutting down...\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-        // In a real OS, we would use ACPI to shutdown
-        while(1) { __asm__("hlt"); }
-    }
-    else if (strcmp(command, "reboot") == 0) {
-        print("Rebooting...\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-        // In a real OS, we would use ACPI to reboot
-        __asm__("jmp 0xFFFF0000");
-    }
-    else if (strcmp(command, "echo") == 0) {
-        if (arg_count > 0) {
-            // Check if it's a math operation
-            if (strchr(args[0], '+') || strchr(args[0], '-') || 
-                strchr(args[0], '*') || strchr(args[0], '/')) {
-                int a = atoi(args[0]);
-                char op = strchr(args[0], '+') ? '+' : 
-                         strchr(args[0], '-') ? '-' :
-                         strchr(args[0], '*') ? '*' : '/';
-                int b = atoi(strchr(args[0], op) + 1);
-                int result = 0;
-                
-                switch(op) {
-                    case '+': result = add(a, b); break;
-                    case '-': result = subtract(a, b); break;
-                    case '*': result = multiply(a, b); break;
-                    case '/': result = divide(a, b); break;
-                }
-                
-                char num_str[32];
-                itoa(result, num_str, 10);
-                print(num_str, VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-                print("\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-            } else {
-                print(args[0], VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-                print("\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-            }
-        }
-    }
-    else if (strcmp(command, "rand") == 0) {
-        char num_str[32];
-        itoa(rand() % 100, num_str, 10);
-        print(num_str, VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-        print("\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-    }
-    else {
-        print("Unknown command: ", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-        print(command, VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-        print("\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-        print("Type 'help' for available commands.\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-    }
-}
-
-// Helper function for integer to string conversion
 void itoa(int value, char* str, int base) {
-    int i = 0;
-    int is_negative = 0;
+    char* ptr = str;
+    char* ptr1 = str;
+    char tmp_char;
+    int tmp_value;
     
-    if (value < 0) {
-        is_negative = 1;
+    if (value < 0 && base == 10) {
         value = -value;
+        *ptr++ = '-';
     }
     
     do {
-        str[i++] = value % base + '0';
-        value = value / base;
-    } while (value > 0);
+        tmp_value = value;
+        value /= base;
+        *ptr++ = "zyxwvutsrqponmlkjihgfedcba9876543210123456789abcdefghijklmnopqrstuvwxyz"[35 + (tmp_value - value * base)];
+    } while (value);
     
-    if (is_negative) {
-        str[i++] = '-';
-    }
+    *ptr-- = '\0';
     
-    str[i] = '\0';
-    
-    // Reverse the string
-    int start = 0;
-    int end = i - 1;
-    while (start < end) {
-        char temp = str[start];
-        str[start] = str[end];
-        str[end] = temp;
-        start++;
-        end--;
-    }
-}
-
-// Update handle_input function
-void handle_input(char c) {
-    if (input_index < INPUT_BUFFER_SIZE - 1) {
-        if (c == '\n') {
-            input_buffer[input_index] = '\0';
-            print("\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-            if (input_index > 0) {
-                process_command(input_buffer);
-            }
-            print("nexus> ", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-            input_index = 0;
-        } else if (c == '\b') {
-            if (input_index > 0) {
-                input_index--;
-                print_char('\b', VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-            }
-        } else {
-            input_buffer[input_index++] = c;
-            print_char(c, VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-        }
-    }
-}
-
-// Update kmain function
-void kmain() {
-    // Initialize keyboard
-    setup_keyboard();
-    
-    clear_screen();
-    print_logo();
-    print("\nWelcome to Nexus OS v0.1\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-    print("Type 'help' for available commands\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-    print("nexus> ", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
-    
-    // Main input loop
-    while (1) {
-        __asm__ volatile("hlt");  // Wait for interrupt
+    while (ptr1 < ptr) {
+        tmp_char = *ptr;
+        *ptr-- = *ptr1;
+        *ptr1++ = tmp_char;
     }
 }

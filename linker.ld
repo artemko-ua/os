@@ -1,37 +1,32 @@
 ENTRY(_start)
 
-SECTIONS {
+SECTIONS
+{
     . = 1M;
-    
-    .multiboot : {
-        *(.multiboot)
+
+    .boot :
+    {
+        /* ensure that the multiboot header is at the beginning */
+        *(.multiboot_header)
     }
-    
-    .text : {
+
+    .text :
+    {
         *(.text)
-        *(.text.*)
     }
-    
-    .rodata : {
+
+    .rodata :
+    {
         *(.rodata)
-        *(.rodata.*)
     }
-    
-    .data : {
+
+    .data :
+    {
         *(.data)
-        *(.data.*)
     }
-    
-    .bss : {
-        *(COMMON)
+
+    .bss :
+    {
         *(.bss)
-        *(.bss.*)
-    }
-    
-    /DISCARD/ : {
-        *(.comment)
-        *(.eh_frame)
-        *(.note.gnu.build-id)
-        *(.note.*)
     }
 }
