@@ -6,9 +6,9 @@ NASM = nasm
 LD = ld
 
 # Compiler flags
-CFLAGS = -m64 -ffreestanding -fno-stack-protector -nostdlib -nodefaultlibs -Wall -Wextra
+CFLAGS = -m64 -ffreestanding -fno-stack-protector -fno-pie -fno-pic -nostdlib -nodefaultlibs -Wall -Wextra -O2
 NASMFLAGS = -f elf64
-LDFLAGS = -nostdlib --nodefaultlibs -T linker.ld
+LDFLAGS = -nostdlib -nodefaultlibs -T linker.ld -z nodefaultlib -z noexecstack
 
 # Source files
 KERNEL_SRCS = kernel.c
@@ -40,7 +40,9 @@ $(TARGET): $(KERNEL_OBJS) $(ASM_OBJS)
 nexus.iso: $(TARGET)
 	mkdir -p iso/boot/grub
 	cp $(TARGET) iso/boot/
-	echo "menuentry 'Nexus OS' {" > iso/boot/grub/grub.cfg
+	echo "set timeout=0" > iso/boot/grub/grub.cfg
+	echo "set default=0" >> iso/boot/grub/grub.cfg
+	echo "menuentry 'Nexus OS' {" >> iso/boot/grub/grub.cfg
 	echo "    multiboot2 /boot/$(TARGET)" >> iso/boot/grub/grub.cfg
 	echo "    boot" >> iso/boot/grub/grub.cfg
 	echo "}" >> iso/boot/grub/grub.cfg
@@ -48,7 +50,7 @@ nexus.iso: $(TARGET)
 
 # Run in QEMU
 run: nexus.iso
-	qemu-system-x86_64 -cdrom nexus.iso
+	qemu-system-x86_64 -cdrom nexus.iso -serial stdio
 
 # Clean up
 clean:

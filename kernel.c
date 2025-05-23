@@ -7,6 +7,12 @@
 #define VGA_COLOR_BLACK 0
 #define VGA_COLOR_WHITE 15
 
+// PIC ports
+#define PIC1_COMMAND 0x20
+#define PIC1_DATA 0x21
+#define PIC2_COMMAND 0xA0
+#define PIC2_DATA 0xA1
+
 // Keyboard scancode to ASCII mapping (simplified)
 static char scancode_to_ascii[128] = {
     0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b',
@@ -36,6 +42,29 @@ static inline uint8_t inb(uint16_t port) {
     return ret;
 }
 
+// Initialize PIC
+void init_pic() {
+    // ICW1: start initialization sequence
+    outb(PIC1_COMMAND, 0x11);
+    outb(PIC2_COMMAND, 0x11);
+    
+    // ICW2: remap IRQ table
+    outb(PIC1_DATA, 0x20);    // IRQ 0-7 -> interrupts 0x20-0x27
+    outb(PIC2_DATA, 0x28);    // IRQ 8-15 -> interrupts 0x28-0x2F
+    
+    // ICW3: tell PICs how they're cascaded
+    outb(PIC1_DATA, 0x04);
+    outb(PIC2_DATA, 0x02);
+    
+    // ICW4: set 8086 mode
+    outb(PIC1_DATA, 0x01);
+    outb(PIC2_DATA, 0x01);
+    
+    // Mask all interrupts except keyboard (IRQ1)
+    outb(PIC1_DATA, 0xFD);    // Enable IRQ1 (keyboard)
+    outb(PIC2_DATA, 0xFF);    // Disable all IRQs on PIC2
+}
+
 // Keyboard handling
 void keyboard_handler() {
     uint8_t scancode = inb(0x60);
@@ -47,12 +76,21 @@ void keyboard_handler() {
             handle_input(ascii);
         }
     }
+    
+    // Send EOI to PIC
+    outb(PIC1_COMMAND, 0x20);
 }
 
-// Simple interrupt handling
+// Setup keyboard
 void setup_keyboard() {
+    // Initialize PIC
+    init_pic();
+    
     // Enable keyboard interrupt
     outb(0x21, inb(0x21) & ~0x02);
+    
+    // Enable interrupts
+    __asm__ volatile("sti");
 }
 
 // Simple polling-based keyboard input
@@ -363,6 +401,9 @@ void handle_input(char c) {
 
 // Update kmain function
 void kmain() {
+    // Initialize keyboard
+    setup_keyboard();
+    
     clear_screen();
     print_logo();
     print("\nWelcome to Nexus OS v0.1\n", VGA_COLOR_WHITE | (VGA_COLOR_BLACK << 4));
@@ -371,7 +412,6 @@ void kmain() {
     
     // Main input loop
     while (1) {
-        char key = get_key();
-        handle_input(key);
+        __asm__ volatile("hlt");  // Wait for interrupt
     }
 }

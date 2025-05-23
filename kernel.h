@@ -11,6 +11,7 @@ void process_command(const char* cmd);
 void itoa(int value, char* str, int base);
 void keyboard_handler();
 void setup_keyboard();
+void init_pic();
 char get_key();
 
 // Math operations

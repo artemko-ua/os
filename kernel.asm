@@ -30,6 +30,17 @@ _start:
     ; Clear interrupts
     cli
     
+    ; Set up stack
+    mov rsp, stack_top
+    
+    ; Set up segment registers
+    mov ax, 0
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+    mov ss, ax
+    
     ; Call the C kernel main function
     call kmain
     
@@ -37,6 +48,12 @@ _start:
 .halt:
     hlt
     jmp .halt
+
+section .bss
+align 16
+stack_bottom:
+    resb 16384  ; 16 KB stack
+stack_top:
 
 ; Pad to ensure the kernel meets multiboot requirements
 times 512 - ($ - $$) db 0 
